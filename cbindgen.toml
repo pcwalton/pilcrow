@@ -1,0 +1,18 @@
+language = "C"
+include_guard = "PILCROW_H"
+header = "/* pilcrow.h */"
+autogen_warning = "/* Automatically generated. Do not edit! */"
+
+[export.rename]
+"CFAttributedString" = "CFAttributedStringRef"
+"Frame" = "pilcrow_frame_t"
+"Framesetter" = "pilcrow_framesetter_t"
+"Glyph" = "pilcrow_glyph_t"
+"GlyphPosition" = "pilcrow_glyph_position_t"
+"GlyphPositions" = "pilcrow_glyph_positions_t"
+"Glyphs" = "pilcrow_glyphs_t"
+"Line" = "pilcrow_line_t"
+"Lines" = "pilcrow_lines_t"
+"Run" = "pilcrow_run_t"
+"Runs" = "pilcrow_runs_t"
+"TextBuf" = "pilcrow_text_buf_t"

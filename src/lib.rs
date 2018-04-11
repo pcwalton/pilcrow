@@ -12,6 +12,7 @@ extern crate core_foundation;
 extern crate core_graphics;
 extern crate core_text;
 extern crate euclid;
+extern crate libc;
 
 use core_foundation::attributedstring::CFAttributedString;
 use core_foundation::base::CFRange;
@@ -27,13 +28,18 @@ use core_text::run::CTRun;
 use euclid::{Point2D, Rect};
 use std::ops::Range;
 
+pub mod ffi;
+
+pub type Glyph = CGGlyph;
+
 pub struct TextBuf {
     attributed_string: CFAttributedString,
 }
 
 impl TextBuf {
     #[inline]
-    pub fn from_string(string: &str) -> TextBuf {
+    #[no_mangle]
+    pub extern "C" fn from_string(string: &str) -> TextBuf {
         TextBuf {
             attributed_string: CFAttributedString::new(CFString::from(string), CFDictionary::new()),
         }
@@ -45,7 +51,7 @@ pub struct Framesetter {
 }
 
 impl Framesetter {
-    pub fn new(text: TextBuf) -> Framesetter {
+    pub fn new(text: &TextBuf) -> Framesetter {
         Framesetter {
             framesetter: CTFramesetter::from_attributed_string(text.attributed_string.clone())
         }
@@ -105,7 +111,7 @@ impl Run {
         self.run.glyph_count() as usize
     }
 
-    pub fn glyphs(&self) -> Vec<CGGlyph> {
+    pub fn glyphs(&self) -> Vec<Glyph> {
         let mut glyphs = vec![0; self.glyph_count()];
         self.run.get_glyphs(0, &mut glyphs);
         glyphs
