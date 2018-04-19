@@ -5,6 +5,9 @@ autogen_warning = "/* Automatically generated. Do not edit! */"
 
 [export.rename]
 "CFAttributedString" = "CFAttributedStringRef"
+"CTFont" = "CTFontRef"
+"Font" = "pilcrow_font_t"
+"FontSelector" = "pilcrow_font_selector_t"
 "Frame" = "pilcrow_frame_t"
 "Framesetter" = "pilcrow_framesetter_t"
 "Glyph" = "pilcrow_glyph_t"
@@ -13,6 +16,12 @@ autogen_warning = "/* Automatically generated. Do not edit! */"
 "Glyphs" = "pilcrow_glyphs_t"
 "Line" = "pilcrow_line_t"
 "Lines" = "pilcrow_lines_t"
+"MarkdownParser" = "pilcrow_markdown_parser_t"
+"NativeFont" = "pilcrow_native_font_t"
+"ParagraphBuf" = "pilcrow_paragraph_buf_t"
 "Run" = "pilcrow_run_t"
 "Runs" = "pilcrow_runs_t"
 "TextBuf" = "pilcrow_text_buf_t"
+
+[enum]
+rename_variants = "QualifiedScreamingSnakeCase"
