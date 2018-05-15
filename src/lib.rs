@@ -8,20 +8,29 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+extern crate cocoa;
 extern crate core_foundation;
 extern crate core_graphics;
 extern crate core_text;
 extern crate euclid;
+extern crate indexmap;
 extern crate libc;
 extern crate pulldown_cmark;
 extern crate rayon;
 
-pub use format::{Font, Format};
+#[macro_use]
+extern crate lazy_static;
+#[macro_use]
+extern crate objc;
+
+pub use format::{Color, Font, FontFaceId, FontId, Format, Image};
 
 use core_foundation::attributedstring::{CFAttributedString, CFMutableAttributedString};
-use core_foundation::base::{CFIndex, CFRange, CFType, CFTypeRef, TCFType};
+use core_foundation::base::{CFIndex, CFRange, CFType, CFTypeRef, TCFType, kCFNotFound};
 use core_foundation::dictionary::{CFDictionary, CFMutableDictionary};
 use core_foundation::string::{CFString, CFStringRef};
+use core_foundation::stringtokenizer::{CFStringTokenizer, kCFStringTokenizerUnitWord};
+use core_graphics::base::CGFloat;
 use core_graphics::font::CGGlyph;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize, CG_ZERO_POINT};
 use core_graphics::path::CGPath;
@@ -29,69 +38,156 @@ use core_text::frame::CTFrame;
 use core_text::framesetter::CTFramesetter;
 use core_text::line::CTLine;
 use core_text::run::CTRun;
-use euclid::{Point2D, Rect, Size2D};
+use euclid::{Point2D, Rect, SideOffsets2D, Size2D, Vector2D};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::sync::{Mutex, MutexGuard};
+use std::cmp::{self, Ordering};
+use std::ops::Range;
+use std::sync::{Mutex, MutexGuard, RwLock};
 
 pub mod ffi;
-mod format;
 pub mod markdown;
+
+mod format;
 
 pub type Glyph = CGGlyph;
 
-pub struct TextBuf {
-    paragraphs: Vec<ParagraphBuf>,
+pub trait LayoutCallbacks: Send + Sync {
+    fn get_image_size(&self, image_id: u32) -> Option<Size2D<u32>>;
 }
 
-impl TextBuf {
+lazy_static! {
+    static ref LAYOUT_CALLBACKS: RwLock<Option<Box<LayoutCallbacks>>> = {
+        RwLock::new(None)
+    };
+}
+
+pub struct Document {
+    paragraphs: Vec<Paragraph>,
+    style: DocumentStyle,
+}
+
+impl Document {
     #[inline]
-    pub fn new() -> TextBuf {
-        TextBuf {
+    pub fn new() -> Document {
+        Document {
             paragraphs: vec![],
+            style: DocumentStyle::default(),
         }
     }
 
     #[inline]
-    pub fn append_paragraph(&mut self, paragraph: ParagraphBuf) {
+    pub fn clear(&mut self) {
+        self.paragraphs.clear()
+    }
+
+    #[inline]
+    pub fn append_paragraph(&mut self, paragraph: Paragraph) {
         self.paragraphs.push(paragraph)
     }
 
     #[inline]
-    pub fn paragraphs(&self) -> &[ParagraphBuf] {
+    pub fn append_document(&mut self, other_document: Document) {
+        self.paragraphs.extend(other_document.paragraphs.into_iter())
+    }
+
+    #[inline]
+    pub fn paragraphs(&self) -> &[Paragraph] {
         &self.paragraphs
     }
 
     #[inline]
-    pub fn paragraphs_mut(&mut self) -> &mut [ParagraphBuf] {
+    pub fn paragraphs_mut(&mut self) -> &mut [Paragraph] {
         &mut self.paragraphs
+    }
+
+    #[inline]
+    pub fn style_mut(&mut self) -> &mut DocumentStyle {
+        &mut self.style
+    }
+
+    #[inline]
+    pub fn entire_range(&self) -> Range<TextLocation> {
+        let start = TextLocation::new(0, 0);
+        let end = match self.paragraphs.last() {
+            None => start,
+            Some(last_paragraph) => {
+                TextLocation::new(self.paragraphs.len() - 1, last_paragraph.char_len())
+            }
+        };
+        start..end
+    }
+
+    pub fn copy_string_in_range(&self, range: Range<TextLocation>) -> String {
+        let mut buffer = String::new();
+        let first_paragraph_index = range.start.paragraph_index;
+        let last_paragraph_index = cmp::min(range.end.paragraph_index + 1, self.paragraphs.len());
+        let paragraph_count = last_paragraph_index - first_paragraph_index;
+        let paragraph_range = first_paragraph_index..last_paragraph_index;
+        for (paragraph_index, paragraph) in self.paragraphs[paragraph_range].iter().enumerate() {
+            let char_start = if paragraph_index == 0 {
+                range.start.character_index
+            } else {
+                0
+            };
+            let char_end = if paragraph_index == paragraph_count - 1 {
+                range.end.character_index
+            } else {
+                paragraph.char_len()
+            };
+            if paragraph_index != 0 {
+                buffer.push('\n')
+            }
+            paragraph.copy_string_in_range(&mut buffer, char_start..char_end)
+        }
+        buffer
+    }
+
+    #[inline]
+    pub fn copy_string(&self) -> String {
+        self.copy_string_in_range(self.entire_range())
     }
 }
 
-pub struct ParagraphBuf {
+pub struct Paragraph {
     attributed_string: Mutex<CFMutableAttributedString>,
+    style: ParagraphStyle,
 }
 
-unsafe impl Sync for ParagraphBuf {}
+unsafe impl Sync for Paragraph {}
 
-impl ParagraphBuf {
+impl Paragraph {
     #[inline]
-    pub fn new() -> ParagraphBuf {
+    pub fn new(style: ParagraphStyle) -> Paragraph {
         let attributed_string = CFAttributedString::new(CFString::from(""), CFDictionary::new());
         let mutable_attributed_string =
             CFMutableAttributedString::from_attributed_string(attributed_string);
-        ParagraphBuf {
+        Paragraph {
             attributed_string: Mutex::new(mutable_attributed_string),
+            style,
         }
     }
 
-    pub fn from_string(string: &str) -> ParagraphBuf {
+    pub fn from_string(string: &str, style: ParagraphStyle) -> Paragraph {
         let attributed_string = CFAttributedString::new(CFString::from(string),
                                                         CFDictionary::new());
         let mutable_attributed_string =
             CFMutableAttributedString::from_attributed_string(attributed_string);
-        ParagraphBuf {
+        Paragraph {
             attributed_string: Mutex::new(mutable_attributed_string),
+            style,
         }
+    }
+
+    #[inline]
+    pub fn copy_string_in_range(&self, buffer: &mut String, range: Range<usize>) {
+        buffer.extend(self.attributed_string
+                          .lock()
+                          .unwrap()
+                          .string()
+                          .to_string()
+                          .chars()
+                          .skip(range.start)
+                          .take(range.end - range.start))
     }
 
     #[inline]
@@ -106,13 +202,23 @@ impl ParagraphBuf {
                              .unwrap()
                              .attributes_at(position as CFIndex)
                              .0;
-        let format_stack = attributes_to_formatting(&attributes);
+        let format_stack = format::attributes_to_formatting(&attributes);
         ParagraphCursor {
             attributed_string: self.attributed_string.lock().unwrap(),
             position: position,
             buffer: CFMutableAttributedString::new(),
             format_stack: format_stack,
         }
+    }
+
+    pub fn word_range_at_char_index(&self, index: usize) -> Range<usize> {
+        let attributed_string = self.attributed_string.lock().unwrap();
+        let string = attributed_string.string();
+        let range = CFRange::init(0, string.char_len());
+        let tokenizer = CFStringTokenizer::new(string, range, kCFStringTokenizerUnitWord);
+        tokenizer.go_to_token_at_index(index as CFIndex);
+        let range = tokenizer.get_current_token_range();
+        (range.location as usize)..((range.location + range.length) as usize)
     }
 }
 
@@ -133,7 +239,7 @@ impl<'a> ParagraphCursor<'a> {
     pub fn push_string(&mut self, string: &str) {
         let mut attributes = CFMutableDictionary::new();
         for format in &self.format_stack {
-            attributes.set(format.key.clone(), format.value.clone())
+            format.add_to_native_attributes(&mut attributes);
         }
         let attributes = attributes.as_dictionary();
         let attributed_string = CFAttributedString::new(CFString::from(string), attributes);
@@ -156,33 +262,49 @@ impl<'a> ParagraphCursor<'a> {
 
 pub struct Framesetter {
     framesetters: Vec<Mutex<ParagraphFramesetter>>,
+    document_style: DocumentStyle,
 }
 
 impl Framesetter {
-    pub fn new(text: &TextBuf) -> Framesetter {
+    pub fn new(document: &Document) -> Framesetter {
         Framesetter {
-            framesetters: text.paragraphs().par_iter().map(|paragraph| {
+            framesetters: document.paragraphs().par_iter().map(|paragraph| {
                 let attributed_string = paragraph.attributed_string.lock().unwrap();
                 let attributed_string = attributed_string.as_attributed_string();
                 let framesetter = CTFramesetter::from_attributed_string(attributed_string.clone());
                 Mutex::new(ParagraphFramesetter {
                     framesetter: framesetter,
                     attributed_string: attributed_string,
+                    style: paragraph.style.clone(),
                 })
             }).collect(),
+            document_style: document.style.clone(),
         }
     }
 
-    pub fn layout_in_rect(&self, rect: &Rect<f32>) -> Vec<Frame> {
+    pub fn layout_in_rect(&self, rect: &Rect<f32>, callbacks: Option<Box<LayoutCallbacks>>)
+                          -> Section {
+        eprintln!("document margins: {:?}", self.document_style.margin);
+
+        *LAYOUT_CALLBACKS.write().unwrap() = callbacks;
+
+        let rect = rect.inner_rect(self.document_style.margin);
+
         let mut frames: Vec<_> = self.framesetters.par_iter().map(|paragraph_framesetter| {
             let paragraph_framesetter = paragraph_framesetter.lock().unwrap();
             let range = CFRange::init(0, paragraph_framesetter.attributed_string
                                                               .string()
                                                               .char_len());
-            let size = CGSize::new(rect.size.width as f64, rect.size.height as f64);
-            let path = CGPath::from_rect(CGRect::new(&CG_ZERO_POINT, &size), None);
+
+            let mut rect = rect;
+            rect.size.width -= paragraph_framesetter.style.margin.horizontal();
+
+            let origin = CGPoint::new(rect.origin.x as CGFloat, rect.origin.y as CGFloat);
+            let size = CGSize::new(rect.size.width as CGFloat, rect.size.height as CGFloat);
+            let path = CGPath::from_rect(CGRect::new(&origin, &size), None);
             Frame {
                 frame: paragraph_framesetter.framesetter.create_frame(range, path, None),
+                style: paragraph_framesetter.style.clone(),
                 virtual_size: rect.size,
                 origin: Point2D::zero(),
             }
@@ -191,27 +313,53 @@ impl Framesetter {
         // TODO(pcwalton): Vertical writing direction.
         let mut origin = rect.origin;
         for mut frame in &mut frames {
-            frame.origin = origin;
-            eprintln!("frame origin={:?}", frame.origin);
+            origin.y += frame.style.margin.top;
+            frame.origin = origin + Vector2D::new(frame.style.margin.left, 0.0);
             origin.y += frame.height();
+            origin.y += frame.style.margin.bottom;
         }
 
-        frames
+        Section {
+            frames,
+        }
     }
 }
 
 struct ParagraphFramesetter {
     framesetter: CTFramesetter,
     attributed_string: CFAttributedString,
+    style: ParagraphStyle,
+}
+
+pub struct Section {
+    frames: Vec<Frame>,
+}
+
+impl Section {
+    #[inline]
+    pub fn frames(&self) -> &[Frame] {
+        &self.frames
+    }
+
+    pub fn frame_index_at_point(&self, point: &Point2D<f32>) -> Option<usize> {
+        self.frames.binary_search_by(|frame| {
+            compare_bounds_and_point_vertically(&frame.bounds(), &point)
+        }).ok()
+    }
 }
 
 pub struct Frame {
     frame: CTFrame,
+    style: ParagraphStyle,
     virtual_size: Size2D<f32>,
     origin: Point2D<f32>,
 }
 
 impl Frame {
+    pub fn char_len(&self) -> usize {
+        self.frame.get_string_range().length as usize
+    }
+
     pub fn lines(&self) -> Vec<Line> {
         let lines = self.frame.lines();
         let mut line_origins = vec![CG_ZERO_POINT; lines.len() as usize];
@@ -227,6 +375,11 @@ impl Frame {
         }).collect()
     }
 
+    #[inline]
+    pub fn bounds(&self) -> Rect<f32> {
+        Rect::new(self.origin, Size2D::new(self.virtual_size.width, self.height()))
+    }
+
     pub fn height(&self) -> f32 {
         let lines = self.frame.lines();
         let line_count = lines.len();
@@ -237,10 +390,65 @@ impl Frame {
         let last_line = lines.get(line_count - 1).unwrap();
         let mut line_origins = [CG_ZERO_POINT];
         self.frame.get_line_origins(line_count - 1, &mut line_origins);
-        let height = last_line.typographic_bounds().descent as f32 - line_origins[0].y as f32 +
-            self.virtual_size.height;
-        eprintln!("frame height={:?}", height);
-        height
+        last_line.typographic_bounds().descent as f32 - line_origins[0].y as f32 +
+            self.virtual_size.height
+    }
+
+    pub fn line_index_at_point(&self, point: &Point2D<f32>) -> Option<usize> {
+        self.lines().binary_search_by(|line| {
+            compare_bounds_and_point_vertically(&line.typographic_bounding_rect(), &point)
+        }).ok()
+    }
+
+    #[inline]
+    pub fn style(&self) -> &ParagraphStyle {
+        &self.style
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct ParagraphStyle {
+    pub content: ParagraphContent,
+    pub margin: SideOffsets2D<f32>,
+}
+
+impl ParagraphStyle {
+    #[inline]
+    pub fn new(content: ParagraphContent) -> ParagraphStyle {
+        ParagraphStyle {
+            content,
+            margin: SideOffsets2D::zero(),
+        }
+    }
+}
+
+impl Default for ParagraphStyle {
+    #[inline]
+    fn default() -> ParagraphStyle {
+        ParagraphStyle {
+            content: ParagraphContent::Text,
+            margin: SideOffsets2D::zero(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ParagraphContent {
+    Text,
+    Rule,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct DocumentStyle {
+    pub margin: SideOffsets2D<f32>,
+}
+
+impl Default for DocumentStyle {
+    #[inline]
+    fn default() -> DocumentStyle {
+        DocumentStyle {
+            margin: SideOffsets2D::zero(),
+        }
     }
 }
 
@@ -259,6 +467,19 @@ impl Line {
     }
 
     #[inline]
+    pub fn char_range(&self) -> Range<usize> {
+        let range = self.line.string_range();
+        (range.location as usize)..((range.location + range.length) as usize)
+    }
+
+    pub fn typographic_bounding_rect(&self) -> Rect<f32> {
+        let typographic_bounds = self.typographic_bounds();
+        Rect::new(Point2D::new(self.origin.x, self.origin.y - typographic_bounds.ascent),
+                  Size2D::new(typographic_bounds.width,
+                              typographic_bounds.ascent + typographic_bounds.descent))
+    }
+
+    #[inline]
     pub fn typographic_bounds(&self) -> TypographicBounds {
         let typographic_bounds = self.line.typographic_bounds();
         TypographicBounds {
@@ -267,6 +488,20 @@ impl Line {
             descent: typographic_bounds.descent as f32,
             leading: typographic_bounds.leading as f32,
         }
+    }
+
+    #[inline]
+    pub fn char_index_for_position(&self, position: &Point2D<f32>) -> Option<usize> {
+        let position = CGPoint::new(position.x as CGFloat, position.y as CGFloat);
+        match self.line.get_string_index_for_position(position) {
+            kCFNotFound => None,
+            index => Some(index as usize),
+        }
+    }
+
+    #[inline]
+    pub fn inline_position_for_char_index(&self, index: usize) -> f32 {
+        self.line.get_offset_for_string_index(index as CFIndex).0 as f32
     }
 }
 
@@ -292,8 +527,47 @@ impl Run {
         positions.into_iter().map(|p| Point2D::new(p.x as f32, p.y as f32)).collect()
     }
 
+    #[inline]
+    pub fn char_range(&self) -> Range<usize> {
+        let range = self.run.get_string_range();
+        (range.start as usize)..(range.end as usize)
+    }
+
     pub fn formatting(&self) -> Vec<Format> {
-        attributes_to_formatting(&self.run.attributes())
+        format::attributes_to_formatting(&self.run.attributes())
+    }
+
+    #[inline]
+    pub fn typographic_bounds(&self) -> TypographicBounds {
+        let typographic_bounds = self.run.typographic_bounds(0..(self.glyph_count() as CFIndex));
+        TypographicBounds {
+            width: typographic_bounds.width as f32,
+            ascent: typographic_bounds.ascent as f32,
+            descent: typographic_bounds.descent as f32,
+            leading: typographic_bounds.leading as f32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd, Debug)]
+#[repr(C)]
+pub struct TextLocation {
+    pub paragraph_index: usize,
+    pub character_index: usize,
+}
+
+impl TextLocation {
+    #[inline]
+    pub fn new(paragraph_index: usize, character_index: usize) -> TextLocation {
+        TextLocation {
+            paragraph_index,
+            character_index,
+        }
+    }
+
+    #[inline]
+    pub fn beginning() -> TextLocation {
+        TextLocation::new(0, 0)
     }
 }
 
@@ -305,14 +579,10 @@ pub struct TypographicBounds {
     pub leading: f32,
 }
 
-fn attributes_to_formatting(attributes: &CFDictionary<CFString, CFType>) -> Vec<Format> {
-    let (attribute_keys, attribute_values) = attributes.get_keys_and_values();
-    attribute_keys.into_iter().zip(attribute_values.into_iter()).map(|(key, value)| {
-        unsafe {
-            Format {
-                key: TCFType::wrap_under_get_rule(key as CFStringRef),
-                value: TCFType::wrap_under_get_rule(value as CFTypeRef),
-            }
-        }
-    }).collect()
+fn compare_bounds_and_point_vertically(bounds: &Rect<f32>, point: &Point2D<f32>) -> Ordering {
+    match (bounds.origin.y <= point.y, point.y < bounds.max_y()) {
+        (true, true) => Ordering::Equal,
+        (false, _) => Ordering::Greater,
+        (_, false) => Ordering::Less,
+    }
 }
