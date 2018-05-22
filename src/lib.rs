@@ -15,9 +15,12 @@ extern crate core_text;
 extern crate euclid;
 extern crate indexmap;
 extern crate libc;
+extern crate minikin_sys;
 extern crate pulldown_cmark;
 extern crate rayon;
 
+#[macro_use]
+extern crate bitflags;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
@@ -39,15 +42,27 @@ use core_text::framesetter::CTFramesetter;
 use core_text::line::CTLine;
 use core_text::run::CTRun;
 use euclid::{Point2D, Rect, SideOffsets2D, Size2D, Vector2D};
+use minikin_sys::*;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::cmp::{self, Ordering};
 use std::ops::Range;
 use std::sync::{Mutex, MutexGuard, RwLock};
 
-pub mod ffi;
-pub mod markdown;
+pub mod platform {
+    pub mod macos;
+}
 
-mod format;
+//pub mod ffi;
+pub mod font;
+pub mod font_collection;
+pub mod framesetter;
+//pub mod markdown;
+pub mod simple_styled_text;
+pub mod styled_text;
+
+//mod format;
+
+/*
 
 pub type Glyph = CGGlyph;
 
@@ -586,3 +601,5 @@ fn compare_bounds_and_point_vertically(bounds: &Rect<f32>, point: &Point2D<f32>)
         (_, false) => Ordering::Less,
     }
 }
+
+*/

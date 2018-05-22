@@ -8,6 +8,7 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+bitflags = "1.0"
 euclid = "0.17"
 indexmap = "1.0"
 lazy_static = "1.0"
@@ -27,6 +28,9 @@ path = "/Users/pcwalton/Source/core-foundation-rs/core-graphics"
 
 [dependencies.core-text]
 path = "/Users/pcwalton/Source/core-foundation-rs/core-text"
+
+[dependencies.minikin-sys]
+path = "/Users/pcwalton/Source/android/platform/frameworks/minikin"
 
 [build-dependencies]
 cbindgen = "0.5"
