@@ -1,4 +1,4 @@
-// pilcrow/src/framesetter.rs
+// pilcrow/src/shaper.rs
 //
 // Copyright © 2018 The Pathfinder Project Developers.
 //
@@ -7,15 +7,3 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-
-use styled_text::StyledTextNode;
-
-pub struct Framesetter {
-}
-
-impl Framesetter {
-    pub fn from_styled_text<'a, I>(text: I) -> Option<Framesetter>
-                                   where I: Iterator<Item = StyledTextNode<'a>> {
-        panic!("TODO")
-    }
-}

@@ -24,9 +24,11 @@ extern crate bitflags;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate objc;
 
-pub use format::{Color, Font, FontFaceId, FontId, Format, Image};
+//pub use format::{Color, Font, FontFaceId, FontId, Format, Image};
 
 use core_foundation::attributedstring::{CFAttributedString, CFMutableAttributedString};
 use core_foundation::base::{CFIndex, CFRange, CFType, CFTypeRef, TCFType, kCFNotFound};
@@ -48,19 +50,25 @@ use std::cmp::{self, Ordering};
 use std::ops::Range;
 use std::sync::{Mutex, MutexGuard, RwLock};
 
-pub mod platform {
-    pub mod macos;
-}
+#[cfg_attr(target_os = "macos", path = "platform/macos.rs")]
+pub mod platform;
 
 //pub mod ffi;
 pub mod font;
 pub mod font_collection;
+pub mod font_family;
 pub mod framesetter;
+pub mod line;
 //pub mod markdown;
+pub mod run;
 pub mod simple_styled_text;
 pub mod styled_text;
+pub mod typesetter;
 
 //mod format;
+
+#[cfg(test)]
+pub mod tests;
 
 /*
 

@@ -11,37 +11,48 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use font::Font;
-use styled_text::ReplacedContentMetrics;
+use platform::Font;
+use styled_text::{InitialStyle, ReplacedContentMetrics, StyledText};
+use styled_text::{StyledTextNode, StyledTextNodeBuf};
 
 #[derive(Clone)]
-pub struct SimpleStyledText {
-    nodes: Vec<SimpleStyledTextNode>,
+pub struct SimpleStyledTextBuf {
+    nodes: Vec<StyledTextNodeBuf>,
+    initial_style: InitialStyle,
 }
 
-impl SimpleStyledText {
-    pub fn new(string: String, styles: SimpleStyles) -> SimpleStyledText {
-        SimpleStyledText {
-            nodes: vec![
-                SimpleStyledTextNode::Start(SimpleStyle::Font(styles.font)),
-                SimpleStyledTextNode::Start(SimpleStyle::Size(styles.size)),
-                SimpleStyledTextNode::Start(SimpleStyle::LetterSpacing(styles.letter_spacing)),
-                SimpleStyledTextNode::Start(SimpleStyle::WordSpacing(styles.word_spacing)),
-                SimpleStyledTextNode::String(string),
-                SimpleStyledTextNode::End,
-                SimpleStyledTextNode::End,
-                SimpleStyledTextNode::End,
-                SimpleStyledTextNode::End,
-            ],
+impl SimpleStyledTextBuf {
+    pub fn new(string: String, initial_style: InitialStyle) -> SimpleStyledTextBuf {
+        SimpleStyledTextBuf {
+            initial_style: initial_style,
+            nodes: vec![StyledTextNodeBuf::String(string)],
         }
     }
+
+    pub fn nodes(&self) -> &[StyledTextNodeBuf] {
+        &self.nodes
+    }
+
+    pub fn nodes_mut(&mut self) -> &mut Vec<StyledTextNodeBuf> {
+        &mut self.nodes
+    }
+
+    pub fn borrow(&self) -> SimpleStyledText {
+        SimpleStyledText {
+            buffer: self,
+            index: 0,
+        }
+    }
+
+    /*
+       TODO(pcwalton): Untested
 
     pub fn replace_string(&mut self, range: Range<usize>, new_string: &str) {
         // Find and modify the first node.
         let (mut current_byte_index, mut current_node_index) = (0, 0);
         loop {
             let mut node = &mut self.nodes[current_node_index];
-            if let SimpleStyledTextNode::String(ref mut dest_string) = node {
+            if let SimpleStyledTextBufNode::String(ref mut dest_string) = node {
                 if range.start < current_byte_index + dest_string.len() {
                     if range.end <= current_byte_index + dest_string.len() {
                         let mut rest = dest_string[(range.end - current_byte_index)..].to_owned();
@@ -67,7 +78,7 @@ impl SimpleStyledText {
 
         // Find and modify the last node.
         self.nodes[current_node_index..].retain(|node| {
-            if let SimpleStyledTextNode::String(ref mut dest_string) = *node {
+            if let SimpleStyledTextBufNode::String(ref mut dest_string) = *node {
                 let new_byte_index = current_byte_index + dest_string.len();
                 let past_end = current_byte_index >= range.end;
                 if !past_end {
@@ -85,27 +96,41 @@ impl SimpleStyledText {
             }
         })
     }
+    */
 }
 
-#[derive(Clone, Debug)]
-pub struct SimpleStyles {
-    pub font: Arc<Font>,
-    pub size: f32,
-    pub letter_spacing: f32,
-    pub word_spacing: f32,
+pub struct SimpleStyledText<'a> {
+    buffer: &'a SimpleStyledTextBuf,
+    index: isize,
 }
 
-#[derive(Clone, Debug)]
-pub enum SimpleStyle {
-    Font(Arc<Font>),
-    Size(f32),
-    LetterSpacing(f32),
-    WordSpacing(f32),
-    ReplacedContent(ReplacedContentMetrics),
-}
+impl<'a> StyledText for SimpleStyledText<'a> {
+    #[inline]
+    fn move_prev(&mut self) -> bool {
+        let ok = self.index >= 0;
+        if ok {
+            self.index -= 1
+        }
+        ok
+    }
 
-pub enum SimpleStyledTextNode {
-    String(String),
-    Start(SimpleStyle),
-    End,
+    #[inline]
+    fn move_next(&mut self) -> bool {
+        let ok = self.index < self.buffer.nodes.len() as isize;
+        if ok {
+            self.index += 1
+        }
+        ok
+    }
+
+    #[inline]
+    fn get(&self) -> StyledTextNode {
+        assert!(self.index >= 0 && self.index < self.buffer.nodes.len() as isize);
+        self.buffer.nodes[self.index as usize].borrow()
+    }
+
+    #[inline]
+    fn initial_style(&self) -> InitialStyle {
+        self.buffer.initial_style.clone()
+    }
 }
