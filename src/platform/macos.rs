@@ -12,7 +12,7 @@ use core_graphics::data_provider::CGDataProvider;
 use core_graphics::font::CGFont;
 use core_graphics::geometry::{CG_ZERO_SIZE, CGRect};
 use core_text::font::CTFont;
-use core_text::font_descriptor::kCTFontDefaultOrientation;
+use core_text::font_descriptor::{SymbolicTraitAccessors, kCTFontDefaultOrientation};
 use euclid::{Point2D, Rect, Size2D};
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use core_text;
 use font::{FontAttributes, FontLike};
+use font_traits::FontTraits;
 
 #[derive(Clone)]
 pub struct Font {
@@ -92,6 +93,7 @@ impl FontLike for Font {
             .to_euclid_rect()
     }
 
+    #[inline]
     fn get_font_data(&self) -> &[u8] {
         match self.font_data {
             Some(ref font_data) => &**font_data,
@@ -99,8 +101,18 @@ impl FontLike for Font {
         }
     }
 
+    #[inline]
     fn get_font_index(&self) -> i32 {
         0
+    }
+
+    #[inline]
+    fn get_font_traits(&self) -> FontTraits {
+        // TODO(pcwalton): Figure out the lang list ID.
+        // TODO(pcwalton): Figure out the font variant.
+        // TODO(pcwalton): Figure out which weights to use.
+        let symbolic_traits = self.core_text_font.symbolic_traits();
+        FontTraits::new(0, 0, 400, symbolic_traits.is_italic())
     }
 }
 

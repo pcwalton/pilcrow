@@ -11,38 +11,50 @@
 use std::sync::Arc;
 
 use font_collection::FontCollection;
+use font_traits::DEFAULT_FONT_WEIGHT;
 use platform::Font;
 
 const DEFAULT_FONT_SIZE: f32 = 16.0;
-const DEFAULT_FONT_WEIGHT: i32 = 400;
 
-pub trait StyledText {
-    fn move_prev(&mut self) -> bool;
-    fn move_next(&mut self) -> bool;
-    fn get(&self) -> StyledTextNode;
+pub trait StyledText : Sized {
+    fn get(&self, index: usize) -> StyledTextNode;
+    fn node_count(&self) -> usize;
     fn initial_style(&self) -> InitialStyle;
 
-    #[inline]
-    fn rewind(&mut self) {
-        while self.move_prev() {}
+    fn byte_length(&self) -> usize {
+        self.iter().map(|node| {
+            match node {
+                StyledTextNode::String(ref string) => string.len(),
+                StyledTextNode::Start(_) | StyledTextNode::End => 0,
+            }
+        }).sum()
     }
 
     #[inline]
-    fn byte_length(&mut self) -> usize {
-        self.rewind();
-        self.remaining_byte_length()
-    }
-
-    fn remaining_byte_length(&mut self) -> usize {
-        let mut length = 0;
-        loop {
-            if let StyledTextNode::String(string) = self.get() {
-                length += string.len()
-            }
-            if !self.move_next() {
-                return length
-            }
+    fn iter(&self) -> StyledTextNodeIter<Self> {
+        StyledTextNodeIter {
+            styled_text: self,
+            index: 0,
         }
+    }
+}
+
+pub struct StyledTextNodeIter<'a, T> where T: StyledText + 'a {
+    styled_text: &'a T,
+    index: usize,
+}
+
+impl<'a, T> Iterator for StyledTextNodeIter<'a, T> where T: StyledText {
+    type Item = StyledTextNode<'a>;
+
+    fn next(&mut self) -> Option<StyledTextNode<'a>> {
+        if self.index == self.styled_text.node_count() {
+            return None
+        }
+
+        let node = self.styled_text.get(self.index);
+        self.index += 1;
+        Some(node)
     }
 }
 

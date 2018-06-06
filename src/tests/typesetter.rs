@@ -21,22 +21,26 @@ use simple_styled_text::SimpleStyledTextBuf;
 use styled_text::{InitialStyle, StyledText};
 use typesetter::Typesetter;
 
+static TEST_FONT_PATH_SERIF: &'static str = "resources/tests/EBGaramond12-Regular.ttf";
+
 #[test]
 pub fn test() {
     let mut font_data = vec![];
-    File::open("resources/tests/EBGaramond12-Regular.ttf").unwrap()
-                                                          .read_to_end(&mut font_data)
-                                                          .unwrap();
+    File::open(TEST_FONT_PATH_SERIF).unwrap().read_to_end(&mut font_data).unwrap();
     let font = Font::from_bytes(Arc::new(font_data)).unwrap();
     let font_family = FontFamily::from_fonts(iter::once(font));
     let font_collection = FontCollection::from_font_families(iter::once(font_family));
     let initial_style = InitialStyle::from_font_family(Arc::new(font_collection));
     let text = SimpleStyledTextBuf::new("Hello world!".to_owned(), initial_style);
-    let mut typesetter = Typesetter::new(text.borrow());
+    let mut typesetter = Typesetter::new(text);
     let range = 0..typesetter.text().byte_length();
     let line = typesetter.create_line(range);
+
     assert_eq!(line.runs().len(), 1);
-    let run = &line.runs()[0];
-    eprintln!("{:?}", run.glyphs());
-    eprintln!("{:?}", run.advances());
+    for run in line.runs() {
+        eprintln!("glyphs: {:?}", run.glyphs());
+        eprintln!("advances: {:?}", run.advances());
+        eprintln!("font: {:?}", run.font());
+        eprintln!("size: {:?}", run.size());
+    }
 }

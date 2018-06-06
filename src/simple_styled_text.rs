@@ -22,6 +22,7 @@ pub struct SimpleStyledTextBuf {
 }
 
 impl SimpleStyledTextBuf {
+    #[inline]
     pub fn new(string: String, initial_style: InitialStyle) -> SimpleStyledTextBuf {
         SimpleStyledTextBuf {
             initial_style: initial_style,
@@ -29,19 +30,14 @@ impl SimpleStyledTextBuf {
         }
     }
 
+    #[inline]
     pub fn nodes(&self) -> &[StyledTextNodeBuf] {
         &self.nodes
     }
 
+    #[inline]
     pub fn nodes_mut(&mut self) -> &mut Vec<StyledTextNodeBuf> {
         &mut self.nodes
-    }
-
-    pub fn borrow(&self) -> SimpleStyledText {
-        SimpleStyledText {
-            buffer: self,
-            index: 0,
-        }
     }
 
     /*
@@ -99,38 +95,19 @@ impl SimpleStyledTextBuf {
     */
 }
 
-pub struct SimpleStyledText<'a> {
-    buffer: &'a SimpleStyledTextBuf,
-    index: isize,
-}
-
-impl<'a> StyledText for SimpleStyledText<'a> {
+impl StyledText for SimpleStyledTextBuf {
     #[inline]
-    fn move_prev(&mut self) -> bool {
-        let ok = self.index >= 0;
-        if ok {
-            self.index -= 1
-        }
-        ok
+    fn get(&self, index: usize) -> StyledTextNode {
+        self.nodes[index].borrow()
     }
 
     #[inline]
-    fn move_next(&mut self) -> bool {
-        let ok = self.index < self.buffer.nodes.len() as isize;
-        if ok {
-            self.index += 1
-        }
-        ok
-    }
-
-    #[inline]
-    fn get(&self) -> StyledTextNode {
-        assert!(self.index >= 0 && self.index < self.buffer.nodes.len() as isize);
-        self.buffer.nodes[self.index as usize].borrow()
+    fn node_count(&self) -> usize {
+        self.nodes.len()
     }
 
     #[inline]
     fn initial_style(&self) -> InitialStyle {
-        self.buffer.initial_style.clone()
+        self.initial_style.clone()
     }
 }

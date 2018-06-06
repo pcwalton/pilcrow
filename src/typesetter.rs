@@ -14,18 +14,28 @@ use minikin_sys::{minikin_font_style_set_weight, minikin_font_style_t};
 use minikin_sys::{minikin_line_breaker_add_replacement, minikin_line_breaker_add_style_run};
 use minikin_sys::{minikin_line_breaker_compute_breaks, minikin_line_breaker_create};
 use minikin_sys::{minikin_line_breaker_destroy, minikin_line_breaker_get_buffer};
-use minikin_sys::{minikin_line_breaker_get_glyph_ids, minikin_line_breaker_get_size};
-use minikin_sys::{minikin_line_breaker_get_widths, minikin_line_breaker_resize};
-use minikin_sys::{minikin_line_breaker_t, minikin_paint_clone, minikin_paint_create};
-use minikin_sys::{minikin_paint_destroy, minikin_paint_get_font, minikin_paint_get_size};
+use minikin_sys::{minikin_line_breaker_get_char_widths};
+use minikin_sys::{minikin_line_breaker_get_face_count, minikin_line_breaker_get_face_fake_bold};
+use minikin_sys::{minikin_line_breaker_get_face_fake_italic};
+use minikin_sys::{minikin_line_breaker_get_face_indices};
+use minikin_sys::{minikin_line_breaker_get_face_typeface};
+use minikin_sys::{minikin_line_breaker_get_glyph_ids};
+use minikin_sys::{minikin_line_breaker_get_size};
+use minikin_sys::{minikin_line_breaker_resize};
+use minikin_sys::{minikin_line_breaker_set_locales, minikin_line_breaker_set_text};
+use minikin_sys::{minikin_line_breaker_t, minikin_paint_clone};
+use minikin_sys::{minikin_paint_create};
+use minikin_sys::{minikin_paint_destroy, minikin_paint_get_size, minikin_paint_get_typeface};
 use minikin_sys::{minikin_paint_set_letter_spacing, minikin_paint_set_size};
-use minikin_sys::{minikin_paint_set_word_spacing, minikin_paint_t};
+use minikin_sys::{minikin_paint_set_word_spacing, minikin_paint_t, minikin_typeface_t};
 use std::cmp;
+use std::ffi::CStr;
 use std::i32;
 use std::ops::Range;
 use std::ptr;
 use std::slice;
 use std::sync::Arc;
+use std::u32;
 
 use font::FontLike;
 use font_collection::FontCollection;
@@ -33,6 +43,9 @@ use line::Line;
 use platform::Font;
 use run::Run;
 use styled_text::{InitialStyle, Style, StyledText, StyledTextNode};
+
+// TODO(pcwalton): Make this configurable.
+static DEFAULT_LOCALE: &'static [u8] = b"en-US\0";
 
 pub struct Typesetter<Text> {
     text: Text,
@@ -51,7 +64,12 @@ impl<Text> Typesetter<Text> where Text: StyledText {
     }
 
     #[inline]
-    pub fn text(&mut self) -> &mut Text {
+    pub fn text(&self) -> &Text {
+        &self.text
+    }
+
+    #[inline]
+    pub fn text_mut(&mut self) -> &mut Text {
         &mut self.text
     }
 
@@ -64,32 +82,59 @@ impl<Text> Typesetter<Text> where Text: StyledText {
 
         let mut style_runs = vec![MinikinStyleRun::from_initial_style(&self.text.initial_style())];
 
-        while self.text.move_next() {
-            match self.text.get() {
+        for node in self.text.iter() {
+            match node {
                 StyledTextNode::String(ref string) => {
+                    eprintln!("begin styled text node");
                     let utf8_node_range = utf8_index..(utf8_index + string.len());
                     let utf16_node_range = utf16_index..(utf16_index + string.encode_utf16()
                                                                              .count());
 
-                    let clamped_utf8_range = string_range.intersect(&utf8_node_range);
-                    if clamped_utf8_range.start < clamped_utf8_range.end {
-                        let utf8_offset = (clamped_utf8_range.start - utf8_node_range.start);
-                        let prefix = &string[0..utf8_offset];
-                        let utf16_offset = prefix.encode_utf16().count();
-
-                        let clamped_utf16_range =
-                            (utf16_node_range.start + utf16_offset)..utf16_node_range.end;
-                        let widths = line_breaker.widths()[clamped_utf16_range.clone()].to_vec();
-                        let glyph_ids = line_breaker.glyph_ids()[clamped_utf16_range].to_vec();
+                    let style_run_utf8_range = string_range.intersect(&utf8_node_range);
+                    if style_run_utf8_range.start < style_run_utf8_range.end {
+                        // Move to the first byte in the string in range.
+                        let style_run_utf8_offset = style_run_utf8_range.start -
+                            utf8_node_range.start;
+                        let style_run_prefix = &string[0..style_run_utf8_offset];
+                        let style_run_utf16_offset = style_run_prefix.encode_utf16().count();
+                        utf8_index += style_run_utf8_offset;
+                        utf16_index += style_run_utf16_offset;
+                        debug_assert!(utf16_node_range.start < utf16_node_range.end);
 
                         let style = style_runs.last().unwrap();
-                        if let MinikinStyleRunAttrs::InlineStyle { paint, .. } = style.attrs {
-                            unsafe {
-                                let font = minikin_paint_get_font(paint);
-                                let size = minikin_paint_get_size(paint);
-                                let font = Font::from_minikin_font(font).unwrap();
-                                runs.push(Run::new(glyph_ids, widths, (*font).clone(), size));
+                        if let MinikinStyleRun::InlineStyle { paint, .. } = *style {
+                            // FIXME(pcwalton): Could be too much FFI traffic calling
+                            // `face_indices()` over and over.
+                            let mut current_face_index = i32::MAX;
+                            let mut utf16_start_index = utf16_node_range.start;
+                            let mut utf16_current_index = utf16_start_index;
+                            loop {
+                                let next_face_index =
+                                    line_breaker.face_indices()[utf16_current_index];
+                                if current_face_index != next_face_index {
+                                    // Flush.
+                                    flush_minikin_font_run(&mut runs,
+                                                           &line_breaker,
+                                                           current_face_index,
+                                                           paint,
+                                                           utf16_start_index..utf16_current_index);
+
+                                    current_face_index = next_face_index;
+                                    utf16_start_index = utf16_current_index;
+                                }
+
+                                utf16_current_index += 1;
+                                if utf16_current_index >= utf16_node_range.end {
+                                    break
+                                }
                             }
+
+                            // Flush the final run.
+                            flush_minikin_font_run(&mut runs,
+                                                   &line_breaker,
+                                                   current_face_index,
+                                                   paint,
+                                                   utf16_start_index..utf16_current_index);
                         }
                     }
 
@@ -107,15 +152,32 @@ impl<Text> Typesetter<Text> where Text: StyledText {
             }
         }
 
-        self.text.rewind();
-
         // TODO(pcwalton)
-        Line::from_runs_and_range(runs, string_range)
+        return Line::from_runs_and_range(runs, string_range);
+
+        fn flush_minikin_font_run(runs: &mut Vec<Run>,
+                                  line_breaker: &MinikinLineBreaker,
+                                  face_index: i32,
+                                  paint: *mut minikin_paint_t,
+                                  utf16_font_run_range: Range<usize>) {
+            if face_index < 0 || utf16_font_run_range.start >= utf16_font_run_range.end {
+                return
+            }
+
+            unsafe {
+                let advances = line_breaker.char_widths()[utf16_font_run_range.clone()].to_vec();
+                let glyph_ids = line_breaker.glyph_ids()[utf16_font_run_range.clone()].to_vec();
+                let typeface = line_breaker.face(face_index as usize).typeface();
+                let size = minikin_paint_get_size(paint);
+                let font = (*Font::from_minikin_typeface(typeface).unwrap()).clone();
+                runs.push(Run::new(glyph_ids, advances, font, size));
+            }
+        }
     }
 
     fn ensure_typeset(&mut self) {
         if self.minikin_line_breaker.is_none() {
-            self.minikin_line_breaker = Some(MinikinLineBreaker::create_and_break(&mut self.text))
+            self.minikin_line_breaker = Some(MinikinLineBreaker::create_and_break(&self.text))
         }
     }
 }
@@ -135,50 +197,69 @@ impl Drop for MinikinLineBreaker {
 }
 
 impl MinikinLineBreaker {
-    fn create_and_break<Text>(text: &mut Text) -> MinikinLineBreaker where Text: StyledText {
+    fn create_and_break<Text>(text: &Text) -> MinikinLineBreaker where Text: StyledText {
         unsafe {
             // Create a Minikin line breaker.
             let line_breaker = minikin_line_breaker_create();
             assert!(!line_breaker.is_null());
 
+            // Set the locale. (A segfault will occur if we don't do this.)
+            let locale = CStr::from_bytes_with_nul(DEFAULT_LOCALE).unwrap();
+            minikin_line_breaker_set_locales(line_breaker, locale.as_ptr());
+
             // Build and index the UTF-16 string.
             let (mut utf16_string, mut string_utf16_lengths) = (vec![], vec![]);
-            while text.move_next() {
-                if let StyledTextNode::String(string) = text.get() {
+            for node in text.iter() {
+                if let StyledTextNode::String(string) = node {
                     let utf16_start_index = utf16_string.len();
                     utf16_string.extend(string.encode_utf16());
                     let utf16_end_index = utf16_string.len();
                     string_utf16_lengths.push(utf16_end_index - utf16_start_index);
                 }
             }
-            text.rewind();
 
             // Feed the UTF-16 string to Minikin.
             let utf16_len = utf16_string.len() as libc::size_t;
             minikin_line_breaker_resize(line_breaker, utf16_len);
             let line_breaker_buffer = minikin_line_breaker_get_buffer(line_breaker);
-            ptr::copy_nonoverlapping(utf16_string.as_ptr(), line_breaker_buffer, utf16_len * 2);
+            ptr::copy_nonoverlapping(utf16_string.as_ptr(), line_breaker_buffer, utf16_len);
 
             // Set up styles.
             let mut style_runs = vec![MinikinStyleRun::from_initial_style(&text.initial_style())];
-            let (mut string_index, mut utf16_index) = (0, 0);
-            while text.move_next() {
-                match text.get() {
+            let (mut string_index, mut last_utf16_index, mut current_utf16_index) = (0, 0, 0);
+
+            for node in text.iter() {
+                match node {
+                    StyledTextNode::Start(_) | StyledTextNode::End => {
+                        let utf16_range = last_utf16_index..current_utf16_index;
+                        style_runs.last().unwrap().add_to_line_breaker(line_breaker, utf16_range);
+                        last_utf16_index = current_utf16_index;
+                    }
+                    _ => {}
+                }
+
+                match node {
                     StyledTextNode::Start(ref style) => {
                         let mut new_style_run = (*style_runs.last().unwrap()).clone();
-                        new_style_run.utf16_start_index = utf16_index;
                         new_style_run.add_style(style);
                         style_runs.push(new_style_run);
                     }
                     StyledTextNode::End => {
-                        style_runs.pop().unwrap().add_to_line_breaker(line_breaker, utf16_index)
+                        style_runs.pop();
                     }
                     StyledTextNode::String(_) => {
-                        utf16_index += string_utf16_lengths[string_index];
+                        current_utf16_index += string_utf16_lengths[string_index];
                         string_index += 1;
                     }
                 }
             }
+
+            let utf16_range = last_utf16_index..current_utf16_index;
+            style_runs.last().unwrap().add_to_line_breaker(line_breaker, utf16_range);
+            debug_assert_eq!(style_runs.len(), 1);
+
+            // Commit.
+            minikin_line_breaker_set_text(line_breaker);
 
             // Perform line breaking.
             let break_count = minikin_line_breaker_compute_breaks(line_breaker);
@@ -197,10 +278,10 @@ impl MinikinLineBreaker {
         }
     }
 
-    fn widths(&self) -> &[f32] {
+    fn char_widths(&self) -> &[f32] {
         unsafe {
             let length = self.char_len();
-            slice::from_raw_parts(minikin_line_breaker_get_widths(self.line_breaker), length)
+            slice::from_raw_parts(minikin_line_breaker_get_char_widths(self.line_breaker), length)
         }
     }
 
@@ -210,14 +291,57 @@ impl MinikinLineBreaker {
             slice::from_raw_parts(minikin_line_breaker_get_glyph_ids(self.line_breaker), length)
         }
     }
+
+    fn face_indices(&self) -> &[i32] {
+        unsafe {
+            let length = self.char_len();
+            slice::from_raw_parts(minikin_line_breaker_get_face_indices(self.line_breaker), length)
+        }
+    }
+
+    fn face_count(&self) -> usize {
+        unsafe {
+            minikin_line_breaker_get_face_count(self.line_breaker)
+        }
+    }
+
+    fn face(&self, index: usize) -> MinikinFace {
+        unsafe {
+            assert!(index < self.face_count());
+            MinikinFace {
+                line_breaker: self,
+                index,
+            }
+        }
+    }
 }
 
-struct MinikinStyleRun {
-    utf16_start_index: usize,
-    attrs: MinikinStyleRunAttrs,
+struct MinikinFace<'a> {
+    line_breaker: &'a MinikinLineBreaker,
+    index: usize,
 }
 
-enum MinikinStyleRunAttrs {
+impl<'a> MinikinFace<'a> {
+    fn typeface(&self) -> *mut minikin_typeface_t {
+        unsafe {
+            minikin_line_breaker_get_face_typeface(self.line_breaker.line_breaker, self.index)
+        }
+    }
+
+    fn fake_bold(&self) -> bool {
+        unsafe {
+            minikin_line_breaker_get_face_fake_bold(self.line_breaker.line_breaker, self.index)
+        }
+    }
+
+    fn fake_italic(&self) -> bool {
+        unsafe {
+            minikin_line_breaker_get_face_fake_italic(self.line_breaker.line_breaker, self.index)
+        }
+    }
+}
+
+enum MinikinStyleRun {
     InlineStyle {
         paint: *mut minikin_paint_t,
         font_collection: Arc<FontCollection>,
@@ -232,7 +356,7 @@ enum MinikinStyleRunAttrs {
 impl Drop for MinikinStyleRun {
     fn drop(&mut self) {
         unsafe {
-            if let MinikinStyleRunAttrs::InlineStyle { paint, .. } = self.attrs {
+            if let MinikinStyleRun::InlineStyle { paint, .. } = *self {
                 assert!(!paint.is_null());
                 minikin_paint_destroy(paint);
             }
@@ -243,30 +367,25 @@ impl Drop for MinikinStyleRun {
 impl Clone for MinikinStyleRun {
     fn clone(&self) -> MinikinStyleRun {
         unsafe {
-            MinikinStyleRun {
-                utf16_start_index: 0,
-                attrs: match self.attrs {
-                    MinikinStyleRunAttrs::InlineStyle {
-                        paint,
-                        ref font_collection,
+            match *self {
+                MinikinStyleRun::InlineStyle {
+                    paint,
+                    ref font_collection,
+                    font_style,
+                    is_rtl,
+                } => {
+                    MinikinStyleRun::InlineStyle {
+                        paint: minikin_paint_clone(paint),
+                        font_collection: (*font_collection).clone(),
                         font_style,
                         is_rtl,
-                    } => {
-                        MinikinStyleRunAttrs::InlineStyle {
-                            paint: minikin_paint_clone(paint),
-                            font_collection: (*font_collection).clone(),
-                            font_style,
-                            is_rtl,
-                        }
                     }
-                    MinikinStyleRunAttrs::ReplacedContent {
+                }
+                MinikinStyleRun::ReplacedContent { width } => {
+                    MinikinStyleRun::ReplacedContent {
                         width,
-                    } => {
-                        MinikinStyleRunAttrs::ReplacedContent {
-                            width,
-                        }
                     }
-                },
+                }
             }
         }
     }
@@ -288,32 +407,29 @@ impl MinikinStyleRun {
                                                        initial_style.font_weight,
                                                        initial_style.font_italic);
 
-            MinikinStyleRun {
-                utf16_start_index: 0,
-                attrs: MinikinStyleRunAttrs::InlineStyle {
-                    paint,
-                    font_collection: initial_style.font_family.clone(),
-                    font_style,
-                    is_rtl: false,
-                },
+            MinikinStyleRun::InlineStyle {
+                paint,
+                font_collection: initial_style.font_family.clone(),
+                font_style,
+                is_rtl: false,
             }
         }
     }
 
     fn add_style(&mut self, style: &Style) {
         if let Style::ReplacedContent(ref new_metrics) = *style {
-            self.attrs = MinikinStyleRunAttrs::ReplacedContent {
+            *self = MinikinStyleRun::ReplacedContent {
                 width: new_metrics.width,
             };
             return
         }
 
-        if let MinikinStyleRunAttrs::InlineStyle {
+        if let MinikinStyleRun::InlineStyle {
             ref mut font_collection,
             paint,
             ref mut font_style,
             is_rtl: _
-        } = self.attrs {
+        } = *self {
             unsafe {
                 match *style {
                     Style::FontFamily(ref new_font_collection) => {
@@ -340,30 +456,32 @@ impl MinikinStyleRun {
 
     unsafe fn add_to_line_breaker(&self,
                                   line_breaker: *mut minikin_line_breaker_t,
-                                  utf16_end_index: usize) {
-        match self.attrs {
-            MinikinStyleRunAttrs::InlineStyle {
+                                  utf16_range: Range<usize>) {
+        if utf16_range.start == utf16_range.end {
+            return
+        }
+
+        match *self {
+            MinikinStyleRun::InlineStyle {
                 ref font_collection,
                 paint,
                 font_style,
                 is_rtl,
             } => {
-                assert!(self.utf16_start_index <= i32::MAX as usize);
-                assert!(utf16_end_index <= i32::MAX as usize);
+                assert!(utf16_range.start <= i32::MAX as usize);
+                assert!(utf16_range.end <= i32::MAX as usize);
                 minikin_line_breaker_add_style_run(line_breaker,
                                                    paint,
                                                    font_collection.as_minikin_font_collection(),
                                                    font_style,
-                                                   self.utf16_start_index as i32,
-                                                   utf16_end_index as i32,
+                                                   utf16_range.start as i32,
+                                                   utf16_range.end as i32,
                                                    is_rtl);
             }
-            MinikinStyleRunAttrs::ReplacedContent {
-                width
-            } => {
+            MinikinStyleRun::ReplacedContent { width } => {
                 minikin_line_breaker_add_replacement(line_breaker,
-                                                     self.utf16_start_index,
-                                                     utf16_end_index,
+                                                     utf16_range.start,
+                                                     utf16_range.end,
                                                      width)
             }
         }

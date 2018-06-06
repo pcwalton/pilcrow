@@ -57,6 +57,7 @@ pub mod platform;
 pub mod font;
 pub mod font_collection;
 pub mod font_family;
+pub mod font_traits;
 pub mod framesetter;
 pub mod line;
 //pub mod markdown;
