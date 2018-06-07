@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use font_collection::FontCollection;
+use font_set::FontSet;
 use font_traits::DEFAULT_FONT_WEIGHT;
 use platform::Font;
 
@@ -37,6 +37,16 @@ pub trait StyledText : Sized {
             index: 0,
         }
     }
+
+    #[doc(hidden)]
+    fn utf16_length(&self) -> usize {
+        self.iter().map(|node| {
+            match node {
+                StyledTextNode::String(ref string) => string.encode_utf16().count(),
+                StyledTextNode::Start(_) | StyledTextNode::End => 0,
+            }
+        }).sum()
+    }
 }
 
 pub struct StyledTextNodeIter<'a, T> where T: StyledText + 'a {
@@ -60,7 +70,7 @@ impl<'a, T> Iterator for StyledTextNodeIter<'a, T> where T: StyledText {
 
 #[derive(Clone, Debug)]
 pub struct InitialStyle {
-    pub font_family: Arc<FontCollection>,
+    pub font_set: Arc<FontSet>,
     pub font_size: f32,
     pub font_weight: i32,
     pub font_italic: bool,
@@ -69,9 +79,9 @@ pub struct InitialStyle {
 }
 
 impl InitialStyle {
-    pub fn from_font_family(font_family: Arc<FontCollection>) -> InitialStyle {
+    pub fn from_font_set(font_set: Arc<FontSet>) -> InitialStyle {
         InitialStyle {
-            font_family: font_family,
+            font_set,
             font_size: DEFAULT_FONT_SIZE,
             font_weight: DEFAULT_FONT_WEIGHT,
             font_italic: false,
@@ -79,11 +89,17 @@ impl InitialStyle {
             word_spacing: 0.0,
         }
     }
+
+    /// A convenience method to create an `InitialStyle` from a single font.
+    #[inline]
+    pub fn from_font(font: Font) -> InitialStyle {
+        InitialStyle::from_font_set(Arc::new(FontSet::from_font(font)))
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Style {
-    FontFamily(Arc<FontCollection>),
+    FontSet(Arc<FontSet>),
     FontSize(f32),
     FontWeight(i32),
     FontItalic(bool),

@@ -14,6 +14,7 @@ use minikin_sys::{minikin_font_style_set_weight, minikin_font_style_t};
 use minikin_sys::{minikin_line_breaker_add_replacement, minikin_line_breaker_add_style_run};
 use minikin_sys::{minikin_line_breaker_compute_breaks, minikin_line_breaker_create};
 use minikin_sys::{minikin_line_breaker_destroy, minikin_line_breaker_get_buffer};
+use minikin_sys::{minikin_line_breaker_get_breaks};
 use minikin_sys::{minikin_line_breaker_get_char_widths};
 use minikin_sys::{minikin_line_breaker_get_face_count, minikin_line_breaker_get_face_fake_bold};
 use minikin_sys::{minikin_line_breaker_get_face_fake_italic};
@@ -21,7 +22,7 @@ use minikin_sys::{minikin_line_breaker_get_face_indices};
 use minikin_sys::{minikin_line_breaker_get_face_typeface};
 use minikin_sys::{minikin_line_breaker_get_glyph_ids};
 use minikin_sys::{minikin_line_breaker_get_size};
-use minikin_sys::{minikin_line_breaker_resize};
+use minikin_sys::{minikin_line_breaker_resize, minikin_line_breaker_set_line_widths};
 use minikin_sys::{minikin_line_breaker_set_locales, minikin_line_breaker_set_text};
 use minikin_sys::{minikin_line_breaker_t, minikin_paint_clone};
 use minikin_sys::{minikin_paint_create};
@@ -38,7 +39,7 @@ use std::sync::Arc;
 use std::u32;
 
 use font::FontLike;
-use font_collection::FontCollection;
+use font_set::FontSet;
 use line::Line;
 use platform::Font;
 use run::Run;
@@ -49,15 +50,19 @@ static DEFAULT_LOCALE: &'static [u8] = b"en-US\0";
 
 pub struct Typesetter<Text> {
     text: Text,
+    width: f32,
     index: usize,
     minikin_line_breaker: Option<MinikinLineBreaker>,
 }
 
 impl<Text> Typesetter<Text> where Text: StyledText {
+    // TODO(pcwalton): Before exposing publicly, get rid of the `width` parameter in favor of
+    // `width` arguments on `suggest_line_break()`.
     #[inline]
-    pub fn new(text: Text) -> Typesetter<Text> {
+    pub fn new(text: Text, width: f32) -> Typesetter<Text> {
         Typesetter {
             text,
+            width,
             index: 0,
             minikin_line_breaker: None,
         }
@@ -73,32 +78,43 @@ impl<Text> Typesetter<Text> where Text: StyledText {
         &mut self.text
     }
 
-    pub fn create_line(&mut self, string_range: Range<usize>) -> Line {
+    pub fn create_line(&mut self, utf16_string_range: Range<usize>) -> Line {
         self.ensure_typeset();
         let line_breaker = self.minikin_line_breaker.as_mut().unwrap();
 
         let mut runs = vec![];
         let (mut utf8_index, mut utf16_index) = (0, 0);
+        let (mut utf8_start_index, mut utf8_end_index) = (None, 0);
 
         let mut style_runs = vec![MinikinStyleRun::from_initial_style(&self.text.initial_style())];
 
         for node in self.text.iter() {
             match node {
                 StyledTextNode::String(ref string) => {
-                    eprintln!("begin styled text node");
                     let utf8_node_range = utf8_index..(utf8_index + string.len());
                     let utf16_node_range = utf16_index..(utf16_index + string.encode_utf16()
                                                                              .count());
 
-                    let style_run_utf8_range = string_range.intersect(&utf8_node_range);
-                    if style_run_utf8_range.start < style_run_utf8_range.end {
+                    let utf16_style_run_range = utf16_string_range.intersect(&utf16_node_range);
+                    if utf16_style_run_range.start < utf16_style_run_range.end {
                         // Move to the first byte in the string in range.
-                        let style_run_utf8_offset = style_run_utf8_range.start -
-                            utf8_node_range.start;
-                        let style_run_prefix = &string[0..style_run_utf8_offset];
+                        let utf16_style_run_start_offset = utf16_style_run_range.start -
+                            utf16_node_range.start;
+                        let utf16_style_run_end_offset = utf16_style_run_range.end -
+                            utf16_node_range.start;
+
+                        /*let style_run_prefix = &string[0..style_run_utf8_offset];
                         let style_run_utf16_offset = style_run_prefix.encode_utf16().count();
-                        utf8_index += style_run_utf8_offset;
-                        utf16_index += style_run_utf16_offset;
+                        utf8_index += style_run_utf8_offset;*/
+                        if utf8_start_index.is_none() {
+                            utf8_start_index = Some(utf8_index +
+                                string.utf16_len_to_utf8_len(utf16_style_run_start_offset));
+                        }
+                        utf8_end_index = utf8_index +
+                            string.utf16_len_to_utf8_len(utf16_style_run_end_offset);
+
+                        let utf16_end_index = utf16_index + utf16_style_run_end_offset;
+                        utf16_index += utf16_style_run_start_offset;
                         debug_assert!(utf16_node_range.start < utf16_node_range.end);
 
                         let style = style_runs.last().unwrap();
@@ -106,7 +122,7 @@ impl<Text> Typesetter<Text> where Text: StyledText {
                             // FIXME(pcwalton): Could be too much FFI traffic calling
                             // `face_indices()` over and over.
                             let mut current_face_index = i32::MAX;
-                            let mut utf16_start_index = utf16_node_range.start;
+                            let mut utf16_start_index = utf16_index;
                             let mut utf16_current_index = utf16_start_index;
                             loop {
                                 let next_face_index =
@@ -124,7 +140,7 @@ impl<Text> Typesetter<Text> where Text: StyledText {
                                 }
 
                                 utf16_current_index += 1;
-                                if utf16_current_index >= utf16_node_range.end {
+                                if utf16_current_index >= utf16_end_index {
                                     break
                                 }
                             }
@@ -152,8 +168,8 @@ impl<Text> Typesetter<Text> where Text: StyledText {
             }
         }
 
-        // TODO(pcwalton)
-        return Line::from_runs_and_range(runs, string_range);
+        let utf8_string_range = utf8_start_index.unwrap_or(0)..utf8_end_index;
+        return Line::from_runs_and_range(runs, utf8_string_range);
 
         fn flush_minikin_font_run(runs: &mut Vec<Run>,
                                   line_breaker: &MinikinLineBreaker,
@@ -175,9 +191,23 @@ impl<Text> Typesetter<Text> where Text: StyledText {
         }
     }
 
+    /// A convenience method that calls `create_line()` with the entire string range.
+    #[inline]
+    pub fn create_single_line(&mut self) -> Line {
+        let range = 0..self.text.byte_length();
+        self.create_line(range)
+    }
+
+    // TODO(pcwalton): Remove this method before stabilization.
+    pub fn line_breaks(&mut self) -> &[i32] {
+        self.ensure_typeset();
+        self.minikin_line_breaker.as_mut().unwrap().breaks()
+    }
+
     fn ensure_typeset(&mut self) {
         if self.minikin_line_breaker.is_none() {
-            self.minikin_line_breaker = Some(MinikinLineBreaker::create_and_break(&self.text))
+            self.minikin_line_breaker = Some(MinikinLineBreaker::create_and_break(&self.text,
+                                                                                  self.width))
         }
     }
 }
@@ -197,7 +227,8 @@ impl Drop for MinikinLineBreaker {
 }
 
 impl MinikinLineBreaker {
-    fn create_and_break<Text>(text: &Text) -> MinikinLineBreaker where Text: StyledText {
+    fn create_and_break<Text>(text: &Text, width: f32) -> MinikinLineBreaker
+                              where Text: StyledText {
         unsafe {
             // Create a Minikin line breaker.
             let line_breaker = minikin_line_breaker_create();
@@ -223,6 +254,12 @@ impl MinikinLineBreaker {
             minikin_line_breaker_resize(line_breaker, utf16_len);
             let line_breaker_buffer = minikin_line_breaker_get_buffer(line_breaker);
             ptr::copy_nonoverlapping(utf16_string.as_ptr(), line_breaker_buffer, utf16_len);
+
+            // Set line widths.
+            minikin_line_breaker_set_line_widths(line_breaker, width, 1, width);
+
+            // Commit the text. This must be done before setting style runs.
+            minikin_line_breaker_set_text(line_breaker);
 
             // Set up styles.
             let mut style_runs = vec![MinikinStyleRun::from_initial_style(&text.initial_style())];
@@ -257,9 +294,6 @@ impl MinikinLineBreaker {
             let utf16_range = last_utf16_index..current_utf16_index;
             style_runs.last().unwrap().add_to_line_breaker(line_breaker, utf16_range);
             debug_assert_eq!(style_runs.len(), 1);
-
-            // Commit.
-            minikin_line_breaker_set_text(line_breaker);
 
             // Perform line breaking.
             let break_count = minikin_line_breaker_compute_breaks(line_breaker);
@@ -314,6 +348,13 @@ impl MinikinLineBreaker {
             }
         }
     }
+
+    fn breaks(&self) -> &[i32] {
+        unsafe {
+            slice::from_raw_parts(minikin_line_breaker_get_breaks(self.line_breaker),
+                                  self.break_count)
+        }
+    }
 }
 
 struct MinikinFace<'a> {
@@ -344,7 +385,7 @@ impl<'a> MinikinFace<'a> {
 enum MinikinStyleRun {
     InlineStyle {
         paint: *mut minikin_paint_t,
-        font_collection: Arc<FontCollection>,
+        font_set: Arc<FontSet>,
         font_style: minikin_font_style_t,
         is_rtl: bool,
     },
@@ -370,13 +411,13 @@ impl Clone for MinikinStyleRun {
             match *self {
                 MinikinStyleRun::InlineStyle {
                     paint,
-                    ref font_collection,
+                    ref font_set,
                     font_style,
                     is_rtl,
                 } => {
                     MinikinStyleRun::InlineStyle {
                         paint: minikin_paint_clone(paint),
-                        font_collection: (*font_collection).clone(),
+                        font_set: (*font_set).clone(),
                         font_style,
                         is_rtl,
                     }
@@ -409,7 +450,7 @@ impl MinikinStyleRun {
 
             MinikinStyleRun::InlineStyle {
                 paint,
-                font_collection: initial_style.font_family.clone(),
+                font_set: initial_style.font_set.clone(),
                 font_style,
                 is_rtl: false,
             }
@@ -425,16 +466,14 @@ impl MinikinStyleRun {
         }
 
         if let MinikinStyleRun::InlineStyle {
-            ref mut font_collection,
+            ref mut font_set,
             paint,
             ref mut font_style,
             is_rtl: _
         } = *self {
             unsafe {
                 match *style {
-                    Style::FontFamily(ref new_font_collection) => {
-                        *font_collection = (*new_font_collection).clone()
-                    }
+                    Style::FontSet(ref new_font_set) => *font_set = (*new_font_set).clone(),
                     Style::FontSize(new_size) => minikin_paint_set_size(paint, new_size),
                     Style::FontWeight(new_weight) => {
                         *font_style = minikin_font_style_set_weight(*font_style, new_weight)
@@ -462,17 +501,12 @@ impl MinikinStyleRun {
         }
 
         match *self {
-            MinikinStyleRun::InlineStyle {
-                ref font_collection,
-                paint,
-                font_style,
-                is_rtl,
-            } => {
+            MinikinStyleRun::InlineStyle { ref font_set, paint, font_style, is_rtl } => {
                 assert!(utf16_range.start <= i32::MAX as usize);
                 assert!(utf16_range.end <= i32::MAX as usize);
                 minikin_line_breaker_add_style_run(line_breaker,
                                                    paint,
-                                                   font_collection.as_minikin_font_collection(),
+                                                   font_set.as_minikin_font_collection(),
                                                    font_style,
                                                    utf16_range.start as i32,
                                                    utf16_range.end as i32,
@@ -495,5 +529,16 @@ trait RangeExt {
 impl RangeExt for Range<usize> {
     fn intersect(&self, other: &Range<usize>) -> Range<usize> {
         cmp::max(self.start, other.start)..cmp::min(self.end, other.end)
+    }
+}
+
+trait StringExt {
+    fn utf16_len_to_utf8_len(&self, utf16_len: usize) -> usize;
+}
+
+impl StringExt for str {
+    fn utf16_len_to_utf8_len(&self, utf16_len: usize) -> usize {
+        let prefix: Vec<u16> = self.encode_utf16().take(utf16_len).collect();
+        String::from_utf16_lossy(&prefix).len()
     }
 }

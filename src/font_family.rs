@@ -9,6 +9,7 @@
 // except according to those terms.
 
 use minikin_sys::{minikin_font_family_create, minikin_font_family_destroy, minikin_font_family_t};
+use std::iter;
 use std::mem;
 use std::sync::Arc;
 
@@ -30,6 +31,7 @@ impl Drop for FontFamily {
 }
 
 impl FontFamily {
+    /// Creates a font family from the given fonts.
     pub fn from_fonts<I>(fonts: I) -> FontFamily where I: Iterator<Item = Font> {
         let mut minikin_fonts = vec![];
         for font in fonts {
@@ -42,6 +44,12 @@ impl FontFamily {
                                                                 minikin_fonts.len()),
             }
         }
+    }
+
+    /// A convenience method that calls `FontFamily::from_fonts()` with a single font.
+    #[inline]
+    pub fn from_font(font: Font) -> FontFamily {
+        FontFamily::from_fonts(iter::once(font))
     }
 
     pub(crate) fn as_minikin_font_family(&self) -> *mut minikin_font_family_t {

@@ -28,6 +28,9 @@ extern crate log;
 #[macro_use]
 extern crate objc;
 
+#[cfg(feature = "cairo")]
+extern crate cairo;
+
 //pub use format::{Color, Font, FontFaceId, FontId, Format, Image};
 
 use core_foundation::attributedstring::{CFAttributedString, CFMutableAttributedString};
@@ -55,8 +58,8 @@ pub mod platform;
 
 //pub mod ffi;
 pub mod font;
-pub mod font_collection;
 pub mod font_family;
+pub mod font_set;
 pub mod font_traits;
 pub mod framesetter;
 pub mod line;
@@ -64,12 +67,14 @@ pub mod line;
 pub mod run;
 pub mod simple_styled_text;
 pub mod styled_text;
-pub mod typesetter;
 
 //mod format;
 
 #[cfg(test)]
 pub mod tests;
+
+// Crate-only because the line break suggestion API isn't implemented yet…
+pub(crate) mod typesetter;
 
 /*
 

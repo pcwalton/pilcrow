@@ -7,6 +7,9 @@ build = "build.rs"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+cairo = ["cairo-rs"]
+
 [dependencies]
 bitflags = "1.0"
 euclid = "0.17"
@@ -18,6 +21,10 @@ log = "0.4"
 objc = "0.2"
 pulldown-cmark = "0.1"
 rayon = "1.0"
+
+[dependencies.cairo-rs]
+version = "0.4"
+optional = true
 
 [dependencies.cocoa]
 path = "/Users/pcwalton/Source/core-foundation-rs/cocoa"

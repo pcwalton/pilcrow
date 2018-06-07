@@ -20,6 +20,7 @@ use minikin_sys::{minikin_typeface_callbacks_t, minikin_typeface_create, minikin
 use minikin_sys::{minikin_typeface_get_callbacks};
 use minikin_sys::{minikin_typeface_get_userdata, minikin_typeface_t};
 use std::fmt::Debug;
+use std::io::{self, Read};
 use std::mem;
 use std::os::raw::c_void;
 use std::sync::Arc;
@@ -37,6 +38,13 @@ pub trait FontLike : Clone + Debug {
     fn get_font_index(&self) -> i32;
 
     fn get_font_traits(&self) -> FontTraits;
+
+    /// A convenience method to create a font from a `File` or other readable object.
+    fn from_reader<R>(mut reader: R) -> Result<Self, ()> where R: Read {
+        let mut font_data = vec![];
+        try!(reader.read_to_end(&mut font_data).map_err(drop));
+        FontLike::from_bytes(Arc::new(font_data))
+    }
 
     #[doc(hidden)]
     fn into_minikin_font(this: Box<Self>) -> *mut minikin_font_t {

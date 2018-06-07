@@ -1,4 +1,4 @@
-// pilcrow/src/font_collection.rs
+// pilcrow/src/font_set.rs
 //
 // Copyright © 2018 The Pathfinder Project Developers.
 //
@@ -10,16 +10,18 @@
 
 use minikin_sys::{minikin_font_collection_create, minikin_font_collection_destroy};
 use minikin_sys::{minikin_font_collection_t};
+use std::iter;
 use std::mem;
 
 use font_family::FontFamily;
+use platform::Font;
 
 #[derive(Debug)]
-pub struct FontCollection {
+pub struct FontSet {
     minikin_font_collection: *mut minikin_font_collection_t,
 }
 
-impl Drop for FontCollection {
+impl Drop for FontSet {
     #[inline]
     fn drop(&mut self) {
         // FIXME(pcwalton): Drop the font families too?
@@ -29,8 +31,8 @@ impl Drop for FontCollection {
     }
 }
 
-impl FontCollection {
-    pub fn from_font_families<I>(font_families: I) -> FontCollection
+impl FontSet {
+    pub fn from_font_families<I>(font_families: I) -> FontSet
                                  where I: Iterator<Item = FontFamily> {
         let mut minikin_families = vec![];
         for font_family in font_families {
@@ -39,11 +41,24 @@ impl FontCollection {
         }
         let minikin_families_ptr = minikin_families.as_mut_ptr();
         unsafe {
-            FontCollection {
+            FontSet {
                 minikin_font_collection: minikin_font_collection_create(minikin_families_ptr,
                                                                         minikin_families.len()),
             }
         }
+    }
+
+    /// A convenience method that calls `FontSet::from_font_families()` with a single family.
+    #[inline]
+    pub fn from_font_family(font_family: FontFamily) -> FontSet {
+        FontSet::from_font_families(iter::once(font_family))
+    }
+
+    /// A convenience method that calls `FontSet::from_font_family()` with a family consisting of
+    /// a single font.
+    #[inline]
+    pub fn from_font(font: Font) -> FontSet {
+        FontSet::from_font_family(FontFamily::from_font(font))
     }
 
     #[inline]
